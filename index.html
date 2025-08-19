@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8" />
+  <title>Lecture Summarizer & Flashcards</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --blue:#1d4ed8;
+      --green:#16a34a;
+      --muted:#6b7280;
+      --card-bg:#fff;
+    }
+    body { font-family: Inter, Arial, sans-serif; margin: 0; background: #f5f7fa; color:#0f172a; }
+    .title { text-align: center; background: #3399ff; color: #fff;
+      padding: 18px; font-size: 28px; font-weight: 700; }
+
+    .container { max-width: 1080px; margin: 24px auto; padding: 0 16px; }
+    .box { background: var(--card-bg); border: 1px solid #e5e7eb; border-radius: 12px;
+      padding: 16px; margin-bottom: 18px; box-shadow: 0 6px 14px rgba(2,6,23,0.06); }
+
+    .row { display:flex; gap:10px; flex-wrap:wrap; align-items:center; }
+    input[type="file"], input[type="text"], input[type="number"] {
+      padding: 8px 10px; border: 1px solid #d1d5db; border-radius: 8px; background:#fff;
+      font-size:14px;
+    }
+    button { padding: 10px 16px; border: none; border-radius: 8px; cursor: pointer;
+      background: #2563eb; color: #fff; font-weight: 600; }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+    textarea {
+      width:100%; padding:14px; border-radius:10px; border:1px solid #d1d5db;
+      background:#fff; font-family:inherit; font-size:15px; line-height:1.5;
+    }
+
+    #summaryBox {
+      min-height: 360px;
+      font-size: 17px;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      overflow: auto;
+    }
+
+    #answerBox {
+      width:100%;
+      min-height: 220px;
+      padding:14px;
+      border-radius:10px;
+      border:1px solid #d1d5db;
+      background:#fff;
+      font-size:16px;
+      line-height:1.6;
+      white-space: pre-wrap;
+      overflow-y:auto;
+    }
+
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px,1fr)); gap:16px; }
+    .flashcard { width:100%; height:150px; perspective:1000px; cursor:pointer; }
+    .flashcard-inner { position:relative; width:100%; height:100%; text-align:center;
+      transition: transform 0.6s; transform-style: preserve-3d; border-radius:12px;
+      box-shadow: 0 8px 18px rgba(2,6,23,0.07); }
+    .flashcard.flipped .flashcard-inner { transform: rotateY(180deg); }
+    .card-face { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+      padding:14px; border-radius:12px; backface-visibility:hidden; color:#fff; font-weight:700; text-align:center; }
+    .card-front { background: var(--blue); }
+    .card-back  { background: var(--green); transform: rotateY(180deg); }
+    .muted { color: var(--muted); }
+
+    @media (max-width:640px){
+      #summaryBox { min-height: 220px; font-size:15px; }
+      #answerBox { min-height:160px; font-size:15px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="title">Lecture Summarizer & Flashcards</div>
+
+  <div class="container">
+
+    <div class="box">
+      <h3>📂 Chọn file</h3>
+      <div class="row">
+        <input type="file" id="fileInput" accept=".txt,.docx,.pdf" />
+        <button id="processBtn" onclick="processFile()">Xử lý</button>
+      </div>
+      <div style="margin-top:8px" class="muted">Hỗ trợ: .txt, .docx, .pdf (PDF scan sẽ OCR nếu backend có xử lý)</div>
+    </div>
+
+    <div class="box">
+      <h3>📄 Tóm tắt</h3>
+      <div id="summaryBox" readonly> Tóm tắt sẽ hiển thị ở đây...</div>
+      <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
+        <button onclick="downloadSummary()"> Tải tóm tắt </button>
+      </div>
+    </div>
+
+
+    <div class="box">
+      <h3> Flashcards</h3>
+      <div class="row" style="margin-bottom:12px;">
+        <input type="number" id="moreCount" placeholder="Số lượng (mặc định 3)" style="width:160px;" min="1" max="50">
+        <button id="moreFlashBtn" onclick="handleMoreClick()" disabled>Tạo thêm flashcards mới</button>
+      </div>
+      <div id="flashcardsContainer" class="cards">
+        <div class="muted">Flashcards sẽ hiển thị tại đây...</div>
+      </div>
+    </div>
+
+    <div class="box">
+      <h3>💬 Hỏi đáp</h3>
+      <div class="row">
+        <input type="text" id="questionInput" placeholder="Nhập câu hỏi... hoặc 'tạo thêm 5 flashcard'" style="flex:1;" />
+        <button id="askBtn" onclick="askQuestion()">Trả lời</button>
+      </div>
+
+      <div id="answerBox" aria-live="polite" style="margin-top:12px;">Câu trả lời sẽ hiển thị ở đây...</div>
+    </div>
+  </div>
+
+  <script>
+
+    async function parseJsonSafe(res){
+      const text = await res.text();
+      try { return JSON.parse(text); }
+      catch(e){ return { __rawText: text, __parseError: true }; }
+    }
+
+    let globalContext = "";
+    let flashcards = [];
+    const summaryBox = document.getElementById("summaryBox");
+    const flashcardsContainer = document.getElementById("flashcardsContainer");
+    const processBtn = document.getElementById("processBtn");
+    const askBtn = document.getElementById("askBtn");
+    const moreFlashBtn = document.getElementById("moreFlashBtn");
+    const answerBox = document.getElementById("answerBox");
+    const moreCountInput = document.getElementById("moreCount");
+
+
+    async function processFile(){
+      const fileInput = document.getElementById("fileInput");
+      if(!fileInput.files.length){ alert("Hãy chọn file trước!"); return; }
+      processBtn.disabled = true;
+      moreFlashBtn.disabled = true;
+      summaryBox.textContent = "⏳ Đang xử lý tóm tắt...";
+      flashcardsContainer.innerHTML = '<div class="muted">⏳ Đang tạo flashcards...</div>';
+
+      const fd = new FormData();
+      fd.append('file', fileInput.files[0]);
+
+      try{
+        const res = await fetch('/upload', { method: 'POST', body: fd });
+        const data = await parseJsonSafe(res);
+        if(!res.ok){
+          const err = data?.error || data?.__rawText || 'Lỗi server khi upload';
+          throw new Error(err);
+        }
+        globalContext = data.context || data.summary || "";
+        summaryBox.textContent = data.summary || "(Không có tóm tắt)";
+        flashcards = data.flashcards || [];
+        renderFlashcards(flashcards);
+        moreFlashBtn.disabled = false;
+      } catch(err){
+        summaryBox.textContent = "❌ " + (err.message || err);
+        flashcardsContainer.innerHTML = '<div class="muted">Không tạo được flashcards.</div>';
+      } finally {
+        processBtn.disabled = false;
+      }
+    }
+
+    function renderFlashcards(cards){
+      flashcardsContainer.innerHTML = "";
+      if(!cards || !cards.length){
+        flashcardsContainer.innerHTML = '<div class="muted">Chưa có flashcards.</div>';
+        return;
+      }
+      cards.forEach((card, idx) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'flashcard';
+        wrap.title = 'Click để lật thẻ';
+        const inner = document.createElement('div');
+        inner.className = 'flashcard-inner';
+
+        const front = document.createElement('div');
+        front.className = 'card-face card-front';
+        front.textContent = `Q${idx+1}: ${card.question}`;
+
+        const back = document.createElement('div');
+        back.className = 'card-face card-back';
+        back.textContent = `A: ${card.answer}`;
+
+        inner.appendChild(front);
+        inner.appendChild(back);
+        wrap.appendChild(inner);
+        wrap.addEventListener('click', () => wrap.classList.toggle('flipped'));
+        flashcardsContainer.appendChild(wrap);
+      });
+    }
+
+    function handleMoreClick(){
+      const v = parseInt(moreCountInput.value, 10);
+      const num = Number.isFinite(v) && v>0 ? Math.min(v,50) : 3;
+      generateMoreFlashcards(num);
+    }
+
+  
+    async function generateMoreFlashcards(num=3){
+      moreFlashBtn.disabled = true;
+      const loadingId = 'loadingMore';
+      flashcardsContainer.insertAdjacentHTML('beforeend', `<div class="muted" id="${loadingId}">⏳ Đang tạo thêm flashcards...</div>`);
+      try{
+        const res = await fetch('/flashcards', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ count: num })
+        });
+        const data = await parseJsonSafe(res);
+        if(!res.ok){
+          const err = data?.error || data?.__rawText || 'Lỗi khi tạo flashcards';
+          throw new Error(err);
+        }
+        document.getElementById(loadingId)?.remove();
+        const newOnes = data.flashcards || [];
+        flashcards = flashcards.concat(newOnes);
+        renderFlashcards(flashcards);
+      } catch(err){
+        const el = document.getElementById(loadingId);
+        if(el) el.textContent = '❌ ' + (err.message || err);
+      } finally {
+        moreFlashBtn.disabled = false;
+      }
+    }
+
+    async function askQuestion(){
+      const q = document.getElementById('questionInput').value.trim();
+      if(!q){ alert('Nhập câu hỏi trước!'); return; }
+
+      
+      const m = q.match(/tạo thêm\s+(\d+)\s+flashcard/i);
+      if(m){
+        const num = Math.max(1, Math.min(parseInt(m[1],10) || 3, 50));
+        await generateMoreFlashcards(num);
+        answerBox.textContent += `\n Đã tạo thêm ${num} flashcards!\n`;
+        document.getElementById('questionInput').value = '';
+        answerBox.scrollTop = answerBox.scrollHeight;
+        return;
+      }
+
+      askBtn.disabled = true;
+      
+      const prev = answerBox.textContent;
+      answerBox.textContent = prev + `\nBạn: ${q}\nAI: ⏳ Đang xử lý...\n`;
+      answerBox.scrollTop = answerBox.scrollHeight;
+
+      try{
+        const res = await fetch('/ask', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ question: q, context: globalContext })
+        });
+        const data = await parseJsonSafe(res);
+        if(!res.ok){
+          const err = data?.error || data?.__rawText || 'Lỗi khi gọi API';
+          throw new Error(err);
+        }
+        
+        const updated = answerBox.textContent.replace('⏳ Đang xử lý...', data.answer || '(Không có trả lời)');
+        answerBox.textContent = updated;
+        answerBox.scrollTop = answerBox.scrollHeight;
+
+        
+        if(data.flashcards && data.flashcards.length){
+          flashcards = flashcards.concat(data.flashcards);
+          renderFlashcards(flashcards);
+        }
+      } catch(err){
+        answerBox.textContent = answerBox.textContent.replace('⏳ Đang xử lý...', '❌ ' + (err.message || err));
+      } finally {
+        askBtn.disabled = false;
+      }
+    }
+
+    
+    function downloadSummary(){
+      const text = summaryBox.textContent || 'Không có nội dung tóm tắt.';
+      const blob = new Blob([text], { type:'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'tom_tat.txt';
+      document.body.appendChild(a); a.click();
+      document.body.removeChild(a); URL.revokeObjectURL(url);
+    }
+
+   
+    window._renderFlashcards = renderFlashcards;
+  </script>
+</body>
+</html>
